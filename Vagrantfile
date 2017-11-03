@@ -44,9 +44,11 @@ Vagrant.configure('2') do |config|
 
   #vagrant plugin install vagrant-proxyconf
   if Vagrant.has_plugin?('vagrant-proxyconf')
-    config.proxy.http = "http://#{yml['network']['proxy_host']}:#{yml['network']['proxy_port']}/"
-    config.proxy.https = "http://#{yml['network']['proxy_host']}:#{yml['network']['proxy_port']}/"
-    config.proxy.no_proxy = yml['network']['no_proxy'] << ',' << yml['master']['ip'] << ',*.' << yml['network']['domain']
+    if !yml['network']['proxy_host'].empty? then
+      config.proxy.http = "http://#{yml['network']['proxy_host']}:#{yml['network']['proxy_port']}/"
+      config.proxy.https = "http://#{yml['network']['proxy_host']}:#{yml['network']['proxy_port']}/"
+      config.proxy.no_proxy = yml['network']['no_proxy'] << ',' << yml['master']['ip'] << ',*.' << yml['network']['domain']
+    end
   end
 
   # build os
@@ -72,11 +74,13 @@ EOF
     end
   end
 
-  config.vm.provision 'shell' do |s|
-    s.inline = <<-EOL
-          export KUBE_REPO_PREFIX=#{yml['docker']['kube_repo']}/kubernates
-          echo 'export KUBE_REPO_PREFIX=#{yml['docker']['kube_repo']}/kubernates' >> $HOME/.bashrc
-    EOL
+  if !yml['docker']['kube_repo'].empty? then
+    config.vm.provision 'shell' do |s|
+      s.inline = <<-EOL
+        export KUBE_REPO_PREFIX=#{yml['docker']['kube_repo']}/kubernates
+        echo 'export KUBE_REPO_PREFIX=#{yml['docker']['kube_repo']}/kubernates' >> $HOME/.bashrc
+      EOL
+    end
   end
 
 
