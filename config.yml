@@ -1,0 +1,33 @@
+host:
+  interface: "enp1s0f0"
+  shared_dir: "/mnt/vbshared"
+network:
+  netmask: "255.255.255.0"
+  gateway: "192.168.0.254"
+  dns: "192.168.0.254"
+  domain: ""
+  proxy_host: ""
+  proxy_port: ""
+  no_proxy: "127.0.0.1,localhost"
+docker:
+  kube_repo: "192.168.0.51:5000"
+  secure_repo: false
+  build_registry: true
+  prepare_registry: false
+master:
+  cpu: 1
+  memory: 2048
+  disksize: "12GB"
+  ip: "192.168.0.51"
+  hostname: "master"
+worker:
+  cpu: 1
+  memory: 2048
+  disksize: "40GB"
+  members:
+    1:
+      ip: "192.168.0.101"
+      hostname: "worker1"
+    2:
+      ip: "192.168.0.102"
+      hostname: "worker2"
