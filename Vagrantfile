@@ -1,39 +1,54 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
+# vagrant plugin install vagrant-proxyconf
+# vagrant plugin install vagrant-disksize
+
 require 'yaml'
+require 'date'
 
 yml = YAML.load_file('config.yml');
 
-class Username
-  def to_s
-    print "Please input user and password @container-registry.oracle.com.\n"
-    print 'Username(mail): '
-    STDIN.gets.chomp
+class Input
+  def initialize(output, hidden=false)
+    @output = output
+    @hidden = hidden
   end
-end
 
-class Password
   def to_s
-    begin
-      system 'stty -echo'
-      print 'Password: '
-      pass = URI.escape(STDIN.gets.chomp)
-    ensure
-      system 'stty echo'
+    if @input.nil? then
+      print @output
+      begin
+        system 'stty -echo' if @hidden
+        @input = STDIN.gets.chomp
+      ensure
+        system 'stty echo' if @hidden
+      end
     end
-    pass
+    @input
   end
 end
 
-class Token
-  def to_s
-    print "Please input k8s token.\n"
-    print 'Token: '
-    STDIN.gets.chomp
+
+def vmConfig(node, hostname, cpu_count, memory_size, disk_size)
+  # VM
+  node.vm.provider 'virtualbox' do |vb|
+    vb.name = hostname
+    vb.cpus = cpu_count
+    vb.memory = memory_size
   end
+  node.disksize.size = disk_size
 end
 
+def osConfig(node, hostname, ip, netmask, iface, gateway)
+  node.vm.network 'public_network', ip: ip, netmask: netmask, bridge: iface
+  node.vm.provision 'shell', run: 'always', path: 'config_gateway.sh', args: gateway
+  node.vm.hostname = hostname
+end
+
+username = Input.new("Please input user and password @container-registry.oracle.com.\nUsername(mail): ")
+password = Input.new('Password: ', true)
+token = Input.new("Please input k8s token.\nToken: ")
 
 # Config ####
 Vagrant.configure('2') do |config|
@@ -54,52 +69,23 @@ Vagrant.configure('2') do |config|
   # build os
   config.vm.provision 'shell', path: 'os.sh'
 
-  # Login container-registry.oracle.com
-  config.vm.provision 'shell' do |s|
-    s.env = {'USERNAME' => Username.new, 'PASSWORD' => Password.new}
-    s.inline = 'docker login -u ${USERNAME} -p ${PASSWORD} container-registry.oracle.com'
+  # Configuration for docker & k8s
+  if yml['docker']['kube_repo'].empty? then
+    config.vm.provision 'shell', path: 'login_oracle_registry.sh', env: {'USERNAME' => username, 'PASSWORD' => password}
+  else
+    config.vm.provision 'shell', path: 'use_local_kube_registry.sh', args: [yml['docker']['kube_repo']]
   end
 
   if yml['docker']['build_registry'] || yml['docker']['secure_repo'] == false then
-    config.vm.provision 'shell' do |s|
-      s.inline = <<-EOL
-          cat << EOF > /etc/docker/daemon.json
-{
-  "insecure-registries" : ["#{yml['docker']['kube_repo']}"]
-}
-EOF
-          systemctl daemon-reload
-          systemctl restart docker
-      EOL
-    end
-  end
-
-  if !yml['docker']['kube_repo'].empty? then
-    config.vm.provision 'shell' do |s|
-      s.inline = <<-EOL
-        export KUBE_REPO_PREFIX=#{yml['docker']['kube_repo']}/kubernates
-        echo 'export KUBE_REPO_PREFIX=#{yml['docker']['kube_repo']}/kubernates' >> $HOME/.bashrc
-      EOL
-    end
+    config.vm.provision 'shell', path: 'use_insecure_registry.sh', args: [yml['docker']['kube_repo']]
   end
 
 
   # Master #####
   config.vm.define yml['master']['hostname'] do |master|
 
-    # VM
-    master.vm.provider 'virtualbox' do |vb|
-      vb.name = yml['master']['hostname']
-      vb.cpus = yml['master']['cpu']
-      vb.memory = yml['master']['memory']
-    end
-    master.disksize.size = yml['master']['disksize']
-
-    #
-    master.vm.network 'public_network', ip: yml['master']['ip'], netmask: yml['network']['netmask'], bridge: yml['host']['interface']
-    master.vm.provision 'shell', run: 'always', inline: "route add default gw #{yml['network']['gateway']}"
-    master.vm.provision 'shell', run: 'always', inline: 'route del default gw 10.0.2.2'
-    master.vm.hostname = yml['master']['hostname']
+    vmConfig(master, yml['master']['hostname'], yml['master']['cpu'], yml['master']['memory'], yml['master']['disksize'])
+    osConfig(master, yml['master']['hostname'], yml['master']['ip'], yml['network']['netmask'], yml['host']['interface'], yml['network']['gateway'])
 
     # Provisioning local registry on Master
     if yml['docker']['build_registry'] then
@@ -110,6 +96,9 @@ EOF
     end
 
     master.vm.provision 'shell', path: 'master.sh'
+
+    # show the cluster information
+    master.vm.provision 'shell', run: 'always', path: 'show_cluster_info.sh'
   end
 
 
@@ -118,32 +107,13 @@ EOF
   (1..worker_num).each do |i|
     config.vm.define yml['worker']['members'][i]['hostname'] do |worker|
 
-      # VM
-      worker.vm.provider 'virtualbox' do |vb|
-        vb.name = yml['worker']['members'][i]['hostname']
-        vb.cpus = yml['worker']['cpu']
-        vb.memory = yml['worker']['memory']
-      end
-      worker.disksize.size = yml['worker']['disksize']
+      vmConfig(worker, yml['worker']['members'][i]['hostname'], yml['worker']['cpu'], yml['worker']['memory'], yml['worker']['disksize'])
+      osConfig(worker, yml['worker']['members'][i]['hostname'], yml['worker']['members'][i]['ip'], yml['network']['netmask'], yml['host']['interface'], yml['network']['gateway'])
 
-      # Network
-      worker.vm.network 'public_network', ip: yml['worker']['members'][i]['ip'], netmask: yml['network']['netmask'], bridge: yml['host']['interface']
-      worker.vm.provision 'shell', run: 'always', inline: "route add default gw #{yml['network']['gateway']}"
-      worker.vm.provision 'shell', run: 'always', inline: 'route del default gw 10.0.2.2'
-      worker.vm.hostname = yml['worker']['members'][i]['hostname']
+      worker.vm.provision 'shell', path: 'worker.sh', env: {'TOKEN' => token}, args: [yml['master']['ip']]
 
-      # k8s
-      worker.vm.provision 'shell' do |s|
-        s.env = {'TOKEN' => Token.new}
-        s.inline = <<-EOL
-          kubeadm-setup.sh join --token ${TOKEN} #{yml['master']['ip']}:6443
-          export KUBECONFIG=/etc/kubernetes/kubelet.conf
-          echo 'export KUBECONFIG=/etc/kubernetes/kubelet.conf' >> $HOME/.bashrc
-        EOL
-      end
-
-      # check
-      worker.vm.provision 'shell', run: 'always', inline: 'kubectl get nodes'
+      # show the cluster information
+      worker.vm.provision 'shell', run: 'always', path: 'show_cluster_info.sh'
     end
   end
 end
